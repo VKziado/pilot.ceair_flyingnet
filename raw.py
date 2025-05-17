@@ -381,8 +381,18 @@ def fill_form(data):
     options = Options()
     options.add_argument('--log-level=3')  # 只显示严重错误
     options.add_argument("--remote-debugging-port=0")  # 禁用调试端口
+
+    chromedriver_path = get_resource_path("tools/chromedriver.exe")
+
+    if not os.path.exists(chromedriver_path):
+        print(f"找不到 chromedriver.exe，请确认路径：{chromedriver_path}")
+        return None
+
+    service = Service(executable_path=chromedriver_path)
+    driver = webdriver.Chrome(service=service, options=options)
+    
     # # 启动浏览器
-    driver = webdriver.Chrome(options=options)
+    # driver = webdriver.Chrome(options=options)
 
     config_path = get_resource_path("config.json")
 
@@ -394,6 +404,7 @@ def fill_form(data):
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
+       
 
     url = config.get("url", "")
     driver.get(url)
