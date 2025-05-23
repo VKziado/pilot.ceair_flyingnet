@@ -5,6 +5,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import WebDriverException
 
 from datetime import datetime
 from selenium import webdriver
@@ -17,7 +18,7 @@ import sys
 import re
 import json
 import msvcrt
-
+import socket
 
 
 
@@ -35,8 +36,8 @@ mapping = {
     "进近方式": {"目视": "目视（visual）", "目视Visual": "目视（visual）" },  # 这里实际选择用点击实现
     "仪表类型": {"真实仪表": "R", "模拟仪表": "S", "无": "无"},
     "训练类型": {"日常训练": "T", "训练": "T", "检查/考试": "E", "检查": "E"},
-    "起飞场站": {"ZULP": "重庆梁平机场"},
-    "着陆场站": {"ZULP": "重庆梁平机场"},
+    "起飞场站": {"ZULP": "重庆梁平机场", "ZUDA": "达州金垭机场", "ZUGU":"广元盘龙机场", "ZUWX":"万州五桥机场", "ZUBZ": "巴中恩阳机场"},
+    "着陆场站": {"ZULP": "重庆梁平机场", "ZUDA": "达州金垭机场", "ZUGU":"广元盘龙机场", "ZUWX":"万州五桥机场", "ZUBZ": "巴中恩阳机场"},
 
     # 次数类，直接填数字字符串
     "日间着陆次数": None,       # 对应 name="dayLandTimes"
@@ -84,44 +85,86 @@ def get_resource_path(relative_path):
 
     return os.path.join(os.path.abspath("."), relative_path)
 
-def get_driver():
-    from selenium import webdriver
-    from selenium.common.exceptions import WebDriverException
+def is_debug_port_open(host='127.0.0.1', port=9222):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)  # 2秒超时
+    try:
+        s.connect((host, port))
+        s.close()
+        return True
+    except:
+        return False
 
-    
-   
+def wait_for_user():
+    print("按回车重试，按 ESC 退出...")
+    while True:
+        key = msvcrt.getch()
+        if key == b'\r':  # 回车
+            return True
+        elif key == b'\x1b':  # ESC
+            print("程序已退出。")
+            sys.exit(0)
+
+def get_driver():
     options = webdriver.ChromeOptions()
     options.add_argument('--log-level=3')  # 只显示严重错误
-    options.add_argument("--remote-debugging-port=0")  # 禁用调试端口
     options.debugger_address = "127.0.0.1:9222"
+    options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
 
-    try:
-        
+    while True:
+        if not is_debug_port_open():
+            print("Chrome 调试端口 9222 未开启，请先启动 Chrome，示例命令：")
+            print('chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\selenum\\profile"')
+            if not wait_for_user():
+                return None
+            continue
+
         chromedriver_path = get_resource_path("tools/chromedriver.exe")
-        # 输出驱动目录
         print("chromedriver.exe 路径：", chromedriver_path)
 
-
-       
-
-        # 检查 chromedriver 是否存在
         if not os.path.exists(chromedriver_path):
             print(f"找不到 chromedriver.exe，请确认路径：{chromedriver_path}")
-            return None
-        else:
-            print(f"找到 chromedriver.exe，路径：{chromedriver_path}")
+            if not wait_for_user():
+                return None
+            continue
 
-        service = Service(executable_path=chromedriver_path)
-        driver = webdriver.Chrome(service=service, options=options)
-        print("已成功连接到调试中的 Chrome 浏览器。")
-        return driver
-    except WebDriverException as e:
-        print(" 无法连接到正在调试的 Chrome 实例，请确认是否已正确启动 Chrome：")
-        print("示例命令：")
-        print('chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\selenum\\profile"')
-        print(f"错误详情：{e}")
-        return None
+        try:
+            service = Service(executable_path=chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            print("已成功连接到调试中的 Chrome 浏览器。")
+            return driver
+        except WebDriverException as e:
+            print("无法连接到正在调试的 Chrome 实例，请确认是否已正确启动 Chrome：")
+            if not wait_for_user():
+                return None
 
+def set_bootstrap_date(driver, input_name, date_str):
+    """
+    设置 Bootstrap Datepicker 日期控件的值并触发必要事件
+    :param driver: Selenium WebDriver 实例
+    :param input_name: 表单 input 的 name，如 "takeoffTime"
+    :param date_str: 日期字符串，格式 "YYYY-MM-DD"
+    """
+    try:
+        input_elem = driver.find_element(By.NAME, input_name)
+        
+        # 去掉 readonly
+        driver.execute_script("arguments[0].removeAttribute('readonly')", input_elem)
+        
+        # 设置 value 并触发 change/input 事件
+        script = '''
+        var input = arguments[0];
+        input.value = arguments[1];
+        input.setAttribute("value", arguments[1]);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        '''
+        driver.execute_script(script, input_elem, date_str)
+
+        print(f"{input_name} 设置成功: {date_str}")
+        
+    except Exception as e:
+        print(f"{input_name} 设置失败: {e}")
 
 
 
@@ -135,7 +178,7 @@ def read_iFly(driver):
         while True:
             try:
                 wait.until(lambda d: d.title == "飞行记录 - 详情 - iFly.Top")
-                print("成功跳转到飞行记录详情页")
+                # print("成功跳转到飞行记录详情页")
                 break  # 成功跳转，跳出循环
             except Exception as e:
                 print("跳转到飞行记录详情页失败（页面标题不符）。")
@@ -150,7 +193,7 @@ def read_iFly(driver):
                         sys.exit(0)
 
     # 初始提示
-    print("打开需要录入的飞行记录，页面加载完成后按回车继续...（按 ESC 键退出）")
+    print("打开需要录入的飞行记录详情，页面加载完成后按回车继续...（按 ESC 键退出）")
     while True:
         key = msvcrt.getch()
         if key == b'\r':
@@ -161,6 +204,11 @@ def read_iFly(driver):
 
     # 等待详情页加载（带失败重试机制）
     wait_for_detail_page()
+
+    #切换到 iFly 窗口
+    handle = get_window_handle_by_keyword(driver, "fms.ifly.top")
+    driver.switch_to.window(handle)
+    
 
 
     # 等待详情页 div.details 出现
@@ -176,8 +224,15 @@ def read_iFly(driver):
             title = title_span.text.strip().rstrip("：")
             # 获取 title_span 后的文本节点内容
             # Selenium 里无法直接拿 next_sibling，需要拿整个 dd 文本减去标题
+            # full_text = dd.text.strip()
+            # value = full_text.replace(title_span.text, '').strip()
+
             full_text = dd.text.strip()
-            value = full_text.replace(title_span.text, '').strip()
+            idx = full_text.find(title)
+            if idx != -1:
+                value = full_text[idx + len(title):].lstrip("：: \n")  # 处理冒号和空格
+            else:
+                value = ""
             data[title] = value
         except Exception as e:
             #print(f"读取某字段失败: {e}")
@@ -266,11 +321,6 @@ def read_iFly(driver):
         end_time = parts[1].strip()
         
 
-    # 分配单飞和带飞时长
-    def minutes_to_str(minutes):
-        h = minutes // 60
-        m = minutes % 60
-        return f"{h:02}:{m:02}"
 
     if is_solo and not is_instructor:
         solo_time = total_time_str
@@ -308,12 +358,13 @@ def read_iFly(driver):
 
     # 转场时间，仪表时间，特技时间(默认00:00)
     # 网页字段“仪表/转场/螺旋”，格式示例："00:05 / 00:10 / 00:00"
-    time_parts_raw = data.get("仪表/转场/螺旋", "")
+    time_parts_raw = data.get("仪表/转场/螺旋:", "")
     instrument_time, transit_time, stunt_time = ("00:00", "00:00", "00:00")
     if time_parts_raw:
         parts = [x.strip() for x in time_parts_raw.split('/')]
         if len(parts) == 3:
             instrument_time, transit_time, stunt_time = parts
+
 
 
     # 组装输出
@@ -345,18 +396,17 @@ def read_iFly(driver):
     夜间训练时间：{night_duration}
     """
 
-    print("\n整理后的飞行记录数据：\n")
-    print(output_text)
+    # print("\n整理后的飞行记录数据：\n")
+    # print(output_text)
     # print("当前工作目录是：", os.getcwd())
 
     try:
         with open("data.txt", "w", encoding="utf-8") as f:
             f.write(output_text)
-        print("数据已成功写入 data.txt 文件。")
+        # print("数据已成功写入 data.txt 文件。")
     except Exception as e:
         print(f"写入文件时发生错误：{e}")
 
-    driver.quit()
 
 
 
@@ -376,45 +426,16 @@ def read_data(filename):
 
 
 
-def fill_form(data):
+def fill_form(data, driver):
     
-    options = Options()
-    options.add_argument('--log-level=3')  # 只显示严重错误
-    options.add_argument("--remote-debugging-port=0")  # 禁用调试端口
-
-    chromedriver_path = get_resource_path("tools/chromedriver.exe")
-
-    if not os.path.exists(chromedriver_path):
-        print(f"找不到 chromedriver.exe，请确认路径：{chromedriver_path}")
-        return None
-
-    service = Service(executable_path=chromedriver_path)
-    driver = webdriver.Chrome(service=service, options=options)
     
-    # # 启动浏览器
-    # driver = webdriver.Chrome(options=options)
-
-    config_path = get_resource_path("config.json")
-
-    # 检查配置文件是否存在
-    if not os.path.exists(config_path):
-        print(f"配置文件 config.json 不存在，请确认路径：{config_path}")
-        driver.quit()
-        return
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-       
-
-    url = config.get("url", "")
-    driver.get(url)
-
-    #driver.get("https://pilot.ceair.com/flyingnet-web-portal/portal_students/students_dailyPaper.do?idCode=MDMxMDk3Ng==")
+    handle = get_window_handle_by_keyword(driver, "pilot.ceair.com")          
+    driver.switch_to.window(handle)
 
     # 检查title是否为 训练任务上报
     try:
         WebDriverWait(driver, 10).until(EC.title_contains("训练任务上报"))
-        print("成功跳转到训练任务上报页面")
+        # print("成功跳转到训练任务上报页面")
     except Exception as e:
         print("跳转到训练任务上报页面失败:", e)
         driver.quit()
@@ -423,19 +444,28 @@ def fill_form(data):
     # 等待页面加载
     #time.sleep(3)
 
-    # 点击加号按钮
-    button = driver.find_element(By.XPATH, "//button[@class='contTextCls' and contains(@onclick, 'newAndEdit')]")
-    button.click()
+    # 检查标题并点击加号按钮
+    if "训练任务上报履历" in driver.title:
+        button = driver.find_element(By.XPATH, "//button[@class='contTextCls' and contains(@onclick, 'newAndEdit')]")
+        button.click()
+        # print("已点击加号按钮")
+    
+    
     wait = WebDriverWait(driver, 10)
 
     
     # 训练日期 trainingDate
     try:
-        val = data.get("训练日期", "") 
+        val = data.get("训练日期", "")
         training_input = driver.find_element(By.NAME, "trainingDate")
         driver.execute_script("arguments[0].removeAttribute('readonly')", training_input)
-        training_input.clear()
-        training_input.send_keys(val)
+        driver.execute_script("""
+            arguments[0].value = arguments[1];
+            arguments[0].setAttribute('value', arguments[1]);
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, training_input, val)
+        # print(f"训练日期设置成功: {val}")
     except Exception as e:
         print(f"训练日期输入失败: {e}")
 
@@ -489,12 +519,16 @@ def fill_form(data):
         mapped_value = mapping.get("进近方式", {}).get(raw_value, raw_value)  
         # 如果映射值不是“目视”或“目视（Visual）”，则设置为“其他”
 
-        if mapped_value != "目视（visual）":
-            mapped_value = "其他（other）"
+        # print(f"映射后的进近方式: {mapped_value}")
 
-        option_xpath = f"//span[@class='text' and contains(text(), '{mapped_value}')]"
-        option_element = wait.until(EC.element_to_be_clickable((By.XPATH, option_xpath)))
-        option_element.click()
+        if mapped_value == "其他（other）":
+            option_xpath = f"//span[@class='text' and contains(text(), '{mapped_value}')]/ancestor::a[1]"
+            option_element = wait.until(EC.element_to_be_clickable((By.XPATH, option_xpath)))
+            option_element.click()
+        else:
+            option_xpath = f"//span[@class='text' and contains(text(), '{mapped_value}')]/ancestor::a[1]"
+            option_element = wait.until(EC.element_to_be_clickable((By.XPATH, option_xpath)))
+            option_element.click()
     except Exception as e:
         print(f"进近方式选择失败: {e}")
 
@@ -556,23 +590,50 @@ def fill_form(data):
     except Exception as e:
         print(f"夜间着陆次数输入失败: {e}")
 
+    
+    # 提取训练日期，作为日期前缀
+    training_date_str = data.get("训练日期", "").strip()
+
     # 出发时刻 takeoffTime
     try:
-        val = data.get("出发时刻", "")
+        time_str = data.get("出发时刻", "").strip()
+        val = f"{training_date_str} {time_str}"  # 拼接成完整格式
         takeoff_input = driver.find_element(By.NAME, "takeoffTime")
+        
+        # 去掉 readonly 属性
         driver.execute_script("arguments[0].removeAttribute('readonly')", takeoff_input)
-        takeoff_input.clear()
-        takeoff_input.send_keys(val)
+        
+        # 设置值并触发 input 和 change 事件
+        driver.execute_script("""
+            arguments[0].value = arguments[1];
+            arguments[0].setAttribute('value', arguments[1]);
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, takeoff_input, val)
+        
+        # print(f"出发时刻设置成功: {val}")
+
     except Exception as e:
         print(f"出发时刻输入失败: {e}")
 
     # 到达时刻 landingTime
     try:
-        val = data.get("到达时刻", "")
+        time_str = data.get("到达时刻", "").strip()
+        val = f"{training_date_str} {time_str}"  # 拼接成完整格式
         landing_input = driver.find_element(By.NAME, "landingTime")
+        
+        # 去掉 readonly 属性
         driver.execute_script("arguments[0].removeAttribute('readonly')", landing_input)
-        landing_input.clear()
-        landing_input.send_keys(val)
+        
+        # 设置值并触发 input 和 change 事件
+        driver.execute_script("""
+            arguments[0].value = arguments[1];
+            arguments[0].setAttribute('value', arguments[1]);
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, landing_input, val)
+        
+        # print(f"到达时刻设置成功: {val}")
     except Exception as e:
         print(f"到达时刻输入失败: {e}")
 
@@ -622,48 +683,105 @@ def fill_form(data):
         remark_input.send_keys(data.get("备注", ""))
     except Exception as e:
         print(f"评语输入失败: {e}")
-
-    #driver.quit()
-
     # 填写完成
     print("填写完成,请检查数据是否正确。")
-    print("关闭东航雏鹰浏览器窗口，在录入下一条记录之前")
-    print("请稍后")
+
+def get_window_handle_by_keyword(driver, keyword: str):
+    """
+    根据标题或 URL 中的关键词，返回匹配的窗口句柄。
+    如果找不到返回 None。
+    """
+    for handle in driver.window_handles:
+        driver.switch_to.window(handle)
+        title = driver.title
+        url = driver.current_url
+        if keyword in title or keyword in url:
+            return handle
+    return None
+
+
 
 
 def main():
 
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # 只保留FATAL日志
     
+    driver = get_driver()
+
+    #检测是否打开了两个窗口，已打开提示已打开两个窗口 没有的话提示缺少项目，并按回车重试
     while True:
-        driver = get_driver()
-        if driver is None:
-            print("终止程序。")
-            break
+        # -------- 检查是否已打开两个目标页面 --------
+        print("正在检测是否打开 iFly 和 东航雏鹰 页面...")
+        while True:
+            handles = driver.window_handles
+            titles = []
+            urls = []
+            found_ifly = False
+            found_ceair = False
+
+            for handle in handles:
+                driver.switch_to.window(handle)
+                try:
+                    current_url = driver.current_url
+                    urls.append(current_url)
+                    if "fms.ifly.top" in current_url:
+                        found_ifly = True
+                    elif "pilot.ceair.com" in current_url:
+                        found_ceair = True
+                except:
+                    continue
+
+            if found_ifly and found_ceair:
+                print("✅ 已检测到 iFly 和 东航雏鹰 页面。")
+                break
+            else:
+                if not found_ifly:
+                    print("❌ 未检测到 iFly 页面。")
+                if not found_ceair:
+                    print("❌ 未检测到 东航雏鹰 页面。")
+                print("\n请确认两个页面已在 Chrome 中打开。按回车重试，ESC 退出...")
+                while True:
+                    key = msvcrt.getch()
+                    if key == b'\r':
+                        break
+                    elif key == b'\x1b':
+                        driver.quit()
+                        print("程序已退出。")
+                        sys.exit(0)
 
         try:
+            # 切换到 iFly
+            handle = get_window_handle_by_keyword(driver, "fms.ifly.top")
+            if handle:
+                driver.switch_to.window(handle)
+                print("已切换到 iFly 页面")
+            else:
+                print("未找到 iFly 页面窗口")
             read_iFly(driver)
 
             data_file = get_resource_path("data.txt")
             data = read_data(data_file)
 
-            fill_form(data)
+            # 切换到东航雏鹰
+            handle = get_window_handle_by_keyword(driver, "pilot.ceair.com")
+            if handle:
+                driver.switch_to.window(handle)
+                # print("已切换到东航雏鹰表单页面")
+            else:
+                print("未找到东航雏鹰窗口")
+            fill_form(data, driver)
 
         except Exception as e:
             print(f"[错误] 程序运行过程中出错：{e}")
 
-        # finally:
-        #     driver.quit()
-
-        print("\n按回车键继续录入下一条飞行记录，按 Esc 退出程序...")
+        print("\n按回车键继续录入下一条飞行记录，按 ESC 退出程序...")
         while True:
             key = msvcrt.getch()
-            if key == b'\r':  # 回车键
+            if key == b'\r':
+                break
+            elif key == b'\x1b':
                 driver.quit()
-                break  # 继续录入下一条
-            elif key == b'\x1b':  # ESC 键
-                driver.quit()
-                print("\n程序已退出。")
+                print("程序已退出。")
                 sys.exit(0)
 
 
